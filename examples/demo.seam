@@ -1,0 +1,13 @@
+# seam demo — run with:  cargo run -q < examples/demo.seam
+use py "math" as m
+m.sqrt(2)
+let tau = m.pi * 2
+"tau is " + tau
+
+use py "pandas" as pd
+let df = pd.read_csv("examples/sales.csv")
+print(df)
+let total = df["amount"].sum()
+"total sales: " + total
+df.groupby("region")["amount"].sum().to_dict()
+pd.read_csv("examples/sales.csv", nrows=2).to_dict()
