@@ -3,7 +3,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde_json::{json, Value as Json};
 
-use crate::lang::Value;
+use crate::interp::Value;
 
 // Embedded so the binary is self-contained; worker/worker.py is the source of truth.
 const PY_WORKER: &str = include_str!("../worker/worker.py");
@@ -40,24 +40,29 @@ impl Worker {
     }
 
     pub fn getattr(&mut self, obj: &Value, name: &str) -> Result<Value, String> {
-        self.request(json!({"op": "getattr", "obj": value_to_wire(obj), "name": name}))
+        let obj = value_to_wire(obj)?;
+        self.request(json!({"op": "getattr", "obj": obj, "name": name}))
     }
 
     pub fn index(&mut self, obj: &Value, key: &Value) -> Result<Value, String> {
-        self.request(json!({"op": "index", "obj": value_to_wire(obj), "key": value_to_wire(key)}))
+        let obj = value_to_wire(obj)?;
+        let key = value_to_wire(key)?;
+        self.request(json!({"op": "index", "obj": obj, "key": key}))
     }
 
     pub fn call(&mut self, obj: &Value, args: &[Value], kwargs: &[(String, Value)]) -> Result<Value, String> {
-        let args: Vec<Json> = args.iter().map(value_to_wire).collect();
-        let kwargs: serde_json::Map<String, Json> = kwargs
-            .iter()
-            .map(|(k, v)| (k.clone(), value_to_wire(v)))
-            .collect();
-        self.request(json!({"op": "call", "obj": value_to_wire(obj), "args": args, "kwargs": kwargs}))
+        let obj = value_to_wire(obj)?;
+        let args: Vec<Json> = args.iter().map(value_to_wire).collect::<Result<_, _>>()?;
+        let mut kw = serde_json::Map::new();
+        for (k, v) in kwargs {
+            kw.insert(k.clone(), value_to_wire(v)?);
+        }
+        self.request(json!({"op": "call", "obj": obj, "args": args, "kwargs": kw}))
     }
 
     pub fn str_of(&mut self, obj: &Value) -> Result<Value, String> {
-        self.request(json!({"op": "str", "obj": value_to_wire(obj)}))
+        let obj = value_to_wire(obj)?;
+        self.request(json!({"op": "str", "obj": obj}))
     }
 
     fn request(&mut self, mut req: Json) -> Result<Value, String> {
@@ -88,10 +93,11 @@ impl Worker {
     }
 }
 
-fn value_to_wire(v: &Value) -> Json {
+fn value_to_wire(v: &Value) -> Result<Json, String> {
     match v {
-        Value::Data(j) => j.clone(),
-        Value::PyRef { id, .. } => json!({"$": "ref", "id": id}),
+        Value::Data(j) => Ok(j.clone()),
+        Value::PyRef { id, .. } => Ok(json!({"$": "ref", "id": id})),
+        Value::Fn(_) => Err("can't pass a seam function to python (callbacks are a future weekend)".to_string()),
     }
 }
 

@@ -1,0 +1,20 @@
+# control flow + pandas together — run: seam examples/report.seam
+use py "pandas" as pd
+use py "builtins" as py
+
+let df = pd.read_csv("examples/sales.csv")
+let totals = df.groupby("region")["amount"].sum().to_dict()
+let grand = df["amount"].sum()
+
+print("sales by region")
+print("---------------")
+for (region in totals) {
+  let amt = totals[region]
+  let pct = py.round(amt / grand * 100, 1)
+  let marker = ""
+  if (pct > 50) {
+    marker = "  ← majority"
+  }
+  print(region + ": " + amt + " (" + pct + "%)" + marker)
+}
+print("grand total:", grand)
