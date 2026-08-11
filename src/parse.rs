@@ -251,14 +251,19 @@ impl Parser {
         Ok(Stmt::Expr(self.parse_expr()?))
     }
 
-    /// 'if' keyword already consumed. `else` must sit on the same line as `}`.
+    /// 'if' keyword already consumed. `else` may follow the `}` on the same
+    /// line or the next one — lookahead restores position if no else appears.
     fn parse_if(&mut self) -> Result<Stmt, String> {
         self.expect(Tok::LParen)?;
         let cond = self.parse_expr()?;
         self.expect(Tok::RParen)?;
         let then = self.parse_block()?;
         let mut els = Vec::new();
-        if self.eat_kw("else") {
+        let save = self.pos;
+        self.skip_nl();
+        if !self.eat_kw("else") {
+            self.pos = save;
+        } else {
             if self.eat_kw("if") {
                 els.push(self.parse_if()?);
             } else {

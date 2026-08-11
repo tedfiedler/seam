@@ -69,7 +69,7 @@ cowsay and chalk for the demos.
   waiting on it; in JS a seam function arrives as a promise-returning
   function (Node can't block), so async JS code awaits it naturally
 - `#` comments; newlines end statements (parens/brackets may span lines);
-  `else` goes on the same line as the closing `}`
+  `else` may follow the `}` on the same line or the next
 - errors carry line numbers; Python exceptions carry their full traceback
 
 ## How it works
@@ -92,6 +92,27 @@ callbacks — with strictly LIFO nesting, so one synchronous pump on each side
 suffices. Workers redirect their real stdout to stderr so stray prints can't
 corrupt the protocol. Foreign exceptions come back carrying the full
 traceback/stack; the REPL survives them. A boundary crossing costs ~30µs.
+
+## Field notes from the first real script
+
+`scripts/repos.seam` is a working repo-health dashboard: GitHub API →
+pandas (freshness, stars, issues) → ANSI-colored table → cowsay verdict.
+Writing it surfaced the real friction list, in rough priority order:
+
+- **no item/attr assignment on refs** — `df["days"] = ...` doesn't parse;
+  `.assign(days=...)` works but a `setitem`/`setattr` op is the obvious next op
+- **no `new`** — JS class instances (`new Chalk({level: 3})`) can't be
+  constructed, which is why the script hand-rolls ANSI codes
+- **no `\x1b`/`\u{...}` string escapes** — `py.chr(27)` is the workaround
+- **no argv** — scripts can't take arguments yet
+- **no methods on data strings** — slicing/`split`/`ljust` need a worker
+  (`py.format(x, "<16")`) or pandas `.str` methods
+- **NaN poisons data marshaling** — one NaN in `to_dict("records")` turns the
+  whole result into a ref instead of data (`json.dumps(allow_nan=False)` is
+  strict by design); `.fillna()` first, but the failure is subtle
+
+One friction got fixed on the spot: `else` used to be required on the same
+line as `}` — the parser now looks ahead across newlines.
 
 ## Deliberately punted (so far)
 
