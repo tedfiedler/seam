@@ -34,10 +34,12 @@ impl CbRegistry {
     }
 }
 
-/// What a worker says next: the answer to our request, or a callback to run.
+/// What a worker says next: the answer to our request, a callback to run,
+/// or "the iterator is exhausted" (only ever in reply to a `next` op).
 pub enum WorkerMsg {
     Response(Result<Value, String>),
     Callback { fn_id: u64, args: Vec<Value> },
+    IterDone,
 }
 
 pub struct Worker {
@@ -136,6 +138,18 @@ impl Worker {
         self.send_json(&json!({"id": id, "op": "str", "obj": obj}))
     }
 
+    pub fn send_iter(&mut self, reg: &mut CbRegistry, obj: &Value) -> Result<(), String> {
+        let obj = self.to_wire(reg, obj)?;
+        let id = self.next_req();
+        self.send_json(&json!({"id": id, "op": "iter", "obj": obj}))
+    }
+
+    pub fn send_next(&mut self, reg: &mut CbRegistry, it: &Value) -> Result<(), String> {
+        let it = self.to_wire(reg, it)?;
+        let id = self.next_req();
+        self.send_json(&json!({"id": id, "op": "next", "obj": it}))
+    }
+
     pub fn send_cb_ok(&mut self, reg: &mut CbRegistry, v: &Value) -> Result<(), String> {
         match self.to_wire(reg, v) {
             Ok(w) => self.send_json(&json!({"cbr": true, "ok": true, "value": w})),
@@ -166,6 +180,9 @@ impl Worker {
             return Ok(WorkerMsg::Callback { fn_id, args });
         }
         if r["ok"].as_bool() == Some(true) {
+            if r["stop"].as_bool() == Some(true) {
+                return Ok(WorkerMsg::IterDone);
+            }
             Ok(WorkerMsg::Response(Ok(self.wire_to_value(&r["value"]))))
         } else {
             let err = r["error"].as_str().unwrap_or("unknown worker error");

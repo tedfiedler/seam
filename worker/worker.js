@@ -81,8 +81,19 @@ async function importModule(name) {
   }
 }
 
+const STOP = Symbol('seam-iter-stop');
+
 async function handle(req) {
   switch (req.op) {
+    case 'iter': {
+      const o = fromWire(req.obj);
+      if (o && typeof o[Symbol.iterator] === 'function') return o[Symbol.iterator]();
+      throw new TypeError('value is not iterable');
+    }
+    case 'next': {
+      const r = fromWire(req.obj).next();
+      return r.done ? STOP : r.value;
+    }
     case 'import':
       return await importModule(req.name);
     case 'getattr': {
@@ -144,7 +155,8 @@ rl.on('line', async (line) => {
   }
   let res;
   try {
-    res = { id: req.id, ok: true, value: toWire(await handle(req)) };
+    const v = await handle(req);
+    res = v === STOP ? { id: req.id, ok: true, stop: true } : { id: req.id, ok: true, value: toWire(v) };
   } catch (e) {
     res = {
       id: req.id,

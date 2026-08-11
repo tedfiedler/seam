@@ -90,6 +90,14 @@ def handle_request(req):
                 *[from_wire(a) for a in req.get("args", [])],
                 **{k: from_wire(v) for k, v in req.get("kwargs", {}).items()},
             )
+        elif op == "iter":
+            res = iter(from_wire(req["obj"]))
+        elif op == "next":
+            try:
+                res = next(from_wire(req["obj"]))
+            except StopIteration:
+                send({"id": req["id"], "ok": True, "stop": True})
+                return
         elif op == "binop":
             o = req["operator"]
             a = from_wire(req["a"])

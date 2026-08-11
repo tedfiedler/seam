@@ -45,7 +45,10 @@ cowsay and chalk for the demos.
 - `let x = expr` to define, `x = expr` to assign (assignments see enclosing scopes)
 - `fn name(a, b) { ... }` with `return` — real closures, recursion works
 - `if (c) { } else if (c) { } else { }`, `while (c) { }`, `for (x in xs) { }`,
-  `break` / `continue` — `for` iterates arrays, object keys, and strings
+  `break` / `continue` — `for` iterates arrays, object keys, strings, and
+  **worker refs directly**: Series values, DataFrame columns, dicts, Sets,
+  generators — streamed lazily one `next` per item, so `break` works even on
+  infinite generators (`for (i in it.count(100)) { ... break }`)
 - operators: `+ - * / %`, `== != < <= > >=`, `and or not` (short-circuit,
   Python-style value semantics); only `nil` and `false` are falsy
 - **operators delegate to workers**: with a ref on either side, the owning
@@ -73,7 +76,8 @@ cowsay and chalk for the demos.
 
 `src/worker.rs` spawns `worker/worker.py` and/or `worker/worker.js` (both
 embedded in the binary) and speaks newline-delimited JSON over stdin/stdout.
-Seven ops: `import`, `getattr`, `call`, `index`, `binop`, `str`, `release`. Every reply
+Nine ops: `import`, `getattr`, `call`, `index`, `binop`, `iter`, `next`,
+`str`, `release`. Every reply
 value is either `{"$":"data","v":...}` (JSON-shaped → copied into seam) or
 `{"$":"ref","id":n,"repr":"..."}` (lives in that worker's heap; seam holds the
 handle and routes later ops back to the owning worker). Passing one worker's
@@ -93,6 +97,6 @@ traceback/stack; the REPL survives them. A boundary crossing costs ~30µs.
 
 - synchronous JS callbacks (`[1,2].map(f)` gets promises — Node can't block;
   Python callbacks are fully synchronous)
-- iterating a ref directly (`.tolist()` / `.to_dict()` it first)
+- async JS iterators (`for await` protocol — sync iterables only for now)
 - handle release before exit (handles free when the worker dies)
 - cross-worker refs, streaming/async beyond awaited promises, big-data (Arrow)

@@ -1,0 +1,26 @@
+# for loops stream worker refs lazily — run: seam examples/iterate.seam
+use py "pandas" as pd
+use py "itertools" as it
+
+let df = pd.read_csv("examples/sales.csv")
+
+# a Series iterates its values
+let sum = 0
+for (amt in df["amount"]) {
+  sum = sum + amt
+}
+print("summed by hand:", sum)
+
+# a DataFrame iterates column names (python's own semantics)
+for (col in df) { print("col:", col) }
+
+# lazy streaming means break works on an INFINITE generator
+let seen = []
+for (i in it.count(100)) {
+  if (i >= 103) { break }
+  print("counting:", i)
+}
+
+# js iterables work too (Set, Map, generators, ...)
+use js "./examples/helpers.js" as h
+for (p in h.primes) { print("prime:", p) }

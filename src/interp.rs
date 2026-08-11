@@ -79,6 +79,12 @@ impl From<String> for Escape {
 
 type EvalResult = Result<Value, Escape>;
 
+#[derive(PartialEq)]
+enum LoopFlow {
+    Normal,
+    Break,
+}
+
 pub struct Interp {
     globals: Rc<RefCell<Env>>,
     py: Option<Worker>,
@@ -115,14 +121,16 @@ impl Interp {
     /// callbacks the worker asks for along the way. Nesting is strict LIFO:
     /// a callback may re-enter the worker, and that nested request's pump
     /// consumes its own response before this one resumes.
-    fn pump(&mut self, lang: Lang) -> EvalResult {
+    /// None means "iterator exhausted" — only possible after a `next` op.
+    fn pump(&mut self, lang: Lang) -> Result<Option<Value>, Escape> {
         loop {
             let msg = {
                 let (w, _) = self.worker_and_reg(lang)?;
                 w.read_msg()?
             };
             match msg {
-                WorkerMsg::Response(r) => return r.map_err(Escape::Error),
+                WorkerMsg::Response(r) => return r.map(Some).map_err(Escape::Error),
+                WorkerMsg::IterDone => return Ok(None),
                 WorkerMsg::Callback { fn_id, args } => {
                     let f = self
                         .callbacks
@@ -140,12 +148,17 @@ impl Interp {
         }
     }
 
+    fn pump_val(&mut self, lang: Lang) -> EvalResult {
+        self.pump(lang)?
+            .ok_or_else(|| Escape::Error("worker sent an unexpected iterator stop".to_string()))
+    }
+
     fn w_import(&mut self, lang: Lang, name: &str) -> EvalResult {
         {
             let (w, _) = self.worker_and_reg(lang)?;
             w.send_import(name)?;
         }
-        self.pump(lang)
+        self.pump_val(lang)
     }
 
     fn w_getattr(&mut self, obj: &Value, name: &str) -> EvalResult {
@@ -154,7 +167,7 @@ impl Interp {
             let (w, reg) = self.worker_and_reg(lang)?;
             w.send_getattr(reg, obj, name)?;
         }
-        self.pump(lang)
+        self.pump_val(lang)
     }
 
     fn w_index(&mut self, obj: &Value, key: &Value) -> EvalResult {
@@ -163,7 +176,7 @@ impl Interp {
             let (w, reg) = self.worker_and_reg(lang)?;
             w.send_index(reg, obj, key)?;
         }
-        self.pump(lang)
+        self.pump_val(lang)
     }
 
     fn w_call(&mut self, obj: &Value, args: &[Value], kwargs: &[(String, Value)]) -> EvalResult {
@@ -172,7 +185,7 @@ impl Interp {
             let (w, reg) = self.worker_and_reg(lang)?;
             w.send_call(reg, obj, args, kwargs)?;
         }
-        self.pump(lang)
+        self.pump_val(lang)
     }
 
     fn w_binop(&mut self, lang: Lang, op: &str, a: &Value, b: Option<&Value>) -> EvalResult {
@@ -180,7 +193,7 @@ impl Interp {
             let (w, reg) = self.worker_and_reg(lang)?;
             w.send_binop(reg, op, a, b)?;
         }
-        self.pump(lang)
+        self.pump_val(lang)
     }
 
     fn w_str(&mut self, obj: &Value) -> EvalResult {
@@ -189,7 +202,7 @@ impl Interp {
             let (w, reg) = self.worker_and_reg(lang)?;
             w.send_str(reg, obj)?;
         }
-        self.pump(lang)
+        self.pump_val(lang)
     }
 
     /// Run a chunk of source. With `echo`, bare expression results are printed.
@@ -253,34 +266,47 @@ impl Interp {
                 }
             },
             Stmt::For { var, iter, body } => {
-                let items: Vec<Value> = match self.eval(iter, env)? {
-                    Value::Data(Json::Array(a)) => a.into_iter().map(Value::Data).collect(),
+                let loop_env = child(env);
+                match self.eval(iter, env)? {
+                    // a worker ref streams: one `next` round-trip per item,
+                    // so break works even on infinite generators
+                    r @ Value::Ref { .. } => {
+                        let it = self.w_iter(&r)?;
+                        while let Some(item) = self.w_next(&it)? {
+                            Env::define(&loop_env, var, item);
+                            if self.run_loop_body(body, &loop_env)? == LoopFlow::Break {
+                                break;
+                            }
+                        }
+                    }
+                    Value::Data(Json::Array(a)) => {
+                        for item in a {
+                            Env::define(&loop_env, var, Value::Data(item));
+                            if self.run_loop_body(body, &loop_env)? == LoopFlow::Break {
+                                break;
+                            }
+                        }
+                    }
                     Value::Data(Json::Object(m)) => {
-                        m.keys().map(|k| Value::Data(json!(k))).collect()
+                        for k in m.keys() {
+                            Env::define(&loop_env, var, Value::Data(json!(k)));
+                            if self.run_loop_body(body, &loop_env)? == LoopFlow::Break {
+                                break;
+                            }
+                        }
                     }
                     Value::Data(Json::String(s)) => {
-                        s.chars().map(|c| Value::Data(json!(c.to_string()))).collect()
-                    }
-                    Value::Ref { .. } => {
-                        return Err(Escape::Error(
-                            "can't iterate a worker ref yet — pull data across first (e.g. .tolist() or .to_dict())"
-                                .to_string(),
-                        ))
+                        for c in s.chars() {
+                            Env::define(&loop_env, var, Value::Data(json!(c.to_string())));
+                            if self.run_loop_body(body, &loop_env)? == LoopFlow::Break {
+                                break;
+                            }
+                        }
                     }
                     _ => {
                         return Err(Escape::Error(
-                            "for wants an array, object (keys), or string".to_string(),
+                            "for wants an array, object (keys), string, or worker ref".to_string(),
                         ))
-                    }
-                };
-                let loop_env = child(env);
-                for item in items {
-                    Env::define(&loop_env, var, item);
-                    match self.exec_block(body, &loop_env) {
-                        Ok(()) => {}
-                        Err(Escape::Break) => break,
-                        Err(Escape::Continue) => continue,
-                        Err(other) => return Err(other),
                     }
                 }
             }
@@ -304,6 +330,32 @@ impl Interp {
             Stmt::Continue => return Err(Escape::Continue),
         }
         Ok(())
+    }
+
+    fn run_loop_body(&mut self, body: &[Stmt], env: &Rc<RefCell<Env>>) -> Result<LoopFlow, Escape> {
+        match self.exec_block(body, env) {
+            Ok(()) | Err(Escape::Continue) => Ok(LoopFlow::Normal),
+            Err(Escape::Break) => Ok(LoopFlow::Break),
+            Err(other) => Err(other),
+        }
+    }
+
+    fn w_iter(&mut self, obj: &Value) -> EvalResult {
+        let lang = ref_lang(obj)?;
+        {
+            let (w, reg) = self.worker_and_reg(lang)?;
+            w.send_iter(reg, obj)?;
+        }
+        self.pump_val(lang)
+    }
+
+    fn w_next(&mut self, it: &Value) -> Result<Option<Value>, Escape> {
+        let lang = ref_lang(it)?;
+        {
+            let (w, reg) = self.worker_and_reg(lang)?;
+            w.send_next(reg, it)?;
+        }
+        self.pump(lang)
     }
 
     fn exec_block(&mut self, stmts: &[Stmt], env: &Rc<RefCell<Env>>) -> Result<(), Escape> {
