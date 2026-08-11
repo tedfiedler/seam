@@ -24,6 +24,9 @@ print(cow.say(text = "sales: " + total))
                 ||----w |
 ```
 
+**New here? Start with the [guide](docs/GUIDE.md)** — setup, the full
+language reference, and worked examples.
+
 ## Run
 
 ```sh
