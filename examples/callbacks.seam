@@ -1,0 +1,35 @@
+# seam functions crossing into workers — run: seam examples/callbacks.seam
+use py "builtins" as py
+use py "pandas" as pd
+
+fn double(x) { return x * 2 }
+fn by_len(s) { return len(s) }
+
+# python's map/sorted driving seam functions
+print(py.list(py.map(double, [1, 2, 3, 4])))
+print(py.sorted(["banana", "fig", "apple"], key=by_len))
+
+# callbacks close over seam state
+let calls = 0
+fn tick(x) {
+  calls = calls + 1
+  return x * 10
+}
+print(py.list(py.map(tick, [1, 2, 3])))
+print("tick ran", calls, "times")
+
+# re-entrant: the callback calls back into the worker that's waiting on it
+fn absneg(x) { return py.abs(x) * -1 }
+print(py.list(py.map(absneg, [3, -4, 5])))
+
+# pandas apply
+let df = pd.read_csv("examples/sales.csv")
+fn size(x) {
+  if (x > 1000) { return "big" }
+  return "small"
+}
+print(df["amount"].apply(size).tolist())
+
+# js callbacks are promises — async js code awaits them
+use js "./examples/helpers.js" as h
+print(h.twice(double, 5))

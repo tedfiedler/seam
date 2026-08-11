@@ -55,6 +55,11 @@ cowsay and chalk for the demos.
   exports are unwrapped
 - builtins: `print(...)`, `len(x)` (`__len__` for py refs, `.length` for js),
   `range(n)` / `range(a, b)`, `str(x)`
+- **callbacks**: seam functions cross the boundary — `py.map(double, xs)`,
+  `py.sorted(xs, key=by_len)`, `df["amount"].apply(f)` all work, callbacks
+  close over seam state, and a callback may re-enter the worker that's
+  waiting on it; in JS a seam function arrives as a promise-returning
+  function (Node can't block), so async JS code awaits it naturally
 - `#` comments; newlines end statements (parens/brackets may span lines);
   `else` goes on the same line as the closing `}`
 - errors carry line numbers; Python exceptions carry their full traceback
@@ -68,13 +73,21 @@ value is either `{"$":"data","v":...}` (JSON-shaped → copied into seam) or
 `{"$":"ref","id":n,"repr":"..."}` (lives in that worker's heap; seam holds the
 handle and routes later ops back to the owning worker). Passing one worker's
 ref to the other is an error — workers don't share heaps; data is the common
-currency. Workers redirect their real stdout to stderr so stray prints can't
+currency.
+
+Seam functions cross as `{"$":"fn","id":k}`. When a worker invokes one it
+sends `{"cb":true,"fn":k,"args":[...]}` upstream and waits; the host runs the
+function and replies `{"cbr":true,...}`. Both sides are re-entrant — a worker
+waiting on a callback still serves nested requests, and the host runs nested
+callbacks — with strictly LIFO nesting, so one synchronous pump on each side
+suffices. Workers redirect their real stdout to stderr so stray prints can't
 corrupt the protocol. Foreign exceptions come back carrying the full
 traceback/stack; the REPL survives them. A boundary crossing costs ~30µs.
 
 ## Deliberately punted (so far)
 
-- callbacks into seam (passing seam functions to workers) — needs a reverse op
+- synchronous JS callbacks (`[1,2].map(f)` gets promises — Node can't block;
+  Python callbacks are fully synchronous)
 - iterating a ref directly (`.tolist()` / `.to_dict()` it first) and
   operators on refs (`df["x"] == "east"` — needs an operator-protocol op)
 - handle release before exit (handles free when the worker dies)

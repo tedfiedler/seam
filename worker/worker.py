@@ -8,6 +8,20 @@ objs = {}
 next_id = 0
 
 
+def send(msg):
+    proto.write(json.dumps(msg) + "\n")
+    proto.flush()
+
+
+def read_msg():
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            sys.exit(0)
+        if line.strip():
+            return json.loads(line)
+
+
 def to_wire(v):
     global next_id
     if hasattr(v, "item"):  # numpy-style scalars -> plain numbers
@@ -26,18 +40,35 @@ def to_wire(v):
 
 def from_wire(w):
     if isinstance(w, dict):
-        if w.get("$") == "ref":
+        t = w.get("$")
+        if t == "ref":
             return objs[w["id"]]
+        if t == "fn":
+            return make_callback(w["id"])
         return {k: from_wire(v) for k, v in w.items()}
     if isinstance(w, list):
         return [from_wire(x) for x in w]
     return w
 
 
-for line in sys.stdin:
-    if not line.strip():
-        continue
-    req = json.loads(line)
+def make_callback(fn_id):
+    def cb(*args, **kwargs):
+        if kwargs:
+            raise TypeError("seam functions don't take keyword arguments")
+        send({"cb": True, "fn": fn_id, "args": [to_wire(a) for a in args]})
+        while True:
+            msg = read_msg()
+            if msg.get("cbr"):
+                if msg.get("ok"):
+                    return from_wire(msg["value"])
+                raise RuntimeError("seam callback failed: " + msg.get("error", "unknown"))
+            # the host re-entered us while evaluating the callback
+            handle_request(msg)
+
+    return cb
+
+
+def handle_request(req):
     try:
         op = req["op"]
         if op == "import":
@@ -66,5 +97,8 @@ for line in sys.stdin:
             "error": f"{type(e).__name__}: {e}",
             "trace": traceback.format_exc(),
         }
-    proto.write(json.dumps(out) + "\n")
-    proto.flush()
+    send(out)
+
+
+while True:
+    handle_request(read_msg())

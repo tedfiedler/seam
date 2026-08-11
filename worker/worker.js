@@ -43,11 +43,24 @@ function fromWire(w) {
   if (Array.isArray(w)) return w.map(fromWire);
   if (w && typeof w === 'object') {
     if (w.$ === 'ref') return objs.get(w.id);
+    if (w.$ === 'fn') return makeCallback(w.id);
     const o = {};
     for (const [k, v] of Object.entries(w)) o[k] = fromWire(v);
     return o;
   }
   return w;
+}
+
+// Seam functions arrive as handles. Node can't block on stdin, so invoking
+// one returns a promise; replies resolve LIFO (nesting is strict).
+const pendingCbs = [];
+
+function makeCallback(fnId) {
+  return (...args) =>
+    new Promise((resolve, reject) => {
+      pendingCbs.push({ resolve, reject });
+      proto.write(JSON.stringify({ cb: true, fn: fnId, args: args.map(toWire) }) + '\n');
+    });
 }
 
 // ESM namespaces hide the useful thing behind .default — unwrap it.
@@ -101,6 +114,13 @@ const rl = readline.createInterface({ input: process.stdin, terminal: false });
 rl.on('line', async (line) => {
   if (!line.trim()) return;
   const req = JSON.parse(line);
+  if (req.cbr) {
+    const p = pendingCbs.pop();
+    if (p) {
+      req.ok ? p.resolve(fromWire(req.value)) : p.reject(new Error('seam callback failed: ' + req.error));
+    }
+    return;
+  }
   let res;
   try {
     res = { id: req.id, ok: true, value: toWire(await handle(req)) };

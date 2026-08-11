@@ -5,7 +5,7 @@ use std::rc::Rc;
 use serde_json::{json, Value as Json};
 
 use crate::parse::{BinOp, Expr, Lang, Parser, Stmt};
-use crate::worker::Worker;
+use crate::worker::{CbRegistry, Worker, WorkerMsg};
 
 #[derive(Clone)]
 pub enum Value {
@@ -83,6 +83,7 @@ pub struct Interp {
     globals: Rc<RefCell<Env>>,
     py: Option<Worker>,
     js: Option<Worker>,
+    callbacks: CbRegistry,
     echo: bool,
 }
 
@@ -92,11 +93,12 @@ impl Interp {
             globals: Rc::new(RefCell::new(Env { vars: HashMap::new(), parent: None })),
             py: None,
             js: None,
+            callbacks: CbRegistry::new(),
             echo: false,
         }
     }
 
-    fn worker(&mut self, lang: Lang) -> Result<&mut Worker, String> {
+    fn worker_and_reg(&mut self, lang: Lang) -> Result<(&mut Worker, &mut CbRegistry), String> {
         let slot = match lang {
             Lang::Py => &mut self.py,
             Lang::Js => &mut self.js,
@@ -106,7 +108,80 @@ impl Interp {
             eprintln!("· spawned {lang} worker ({})", w.cmd);
             *slot = Some(w);
         }
-        Ok(slot.as_mut().unwrap())
+        Ok((slot.as_mut().unwrap(), &mut self.callbacks))
+    }
+
+    /// Read worker messages until our response arrives, running any seam
+    /// callbacks the worker asks for along the way. Nesting is strict LIFO:
+    /// a callback may re-enter the worker, and that nested request's pump
+    /// consumes its own response before this one resumes.
+    fn pump(&mut self, lang: Lang) -> EvalResult {
+        loop {
+            let msg = {
+                let (w, _) = self.worker_and_reg(lang)?;
+                w.read_msg()?
+            };
+            match msg {
+                WorkerMsg::Response(r) => return r.map_err(Escape::Error),
+                WorkerMsg::Callback { fn_id, args } => {
+                    let f = self
+                        .callbacks
+                        .get(fn_id)
+                        .ok_or_else(|| Escape::Error(format!("unknown callback id {fn_id}")))?;
+                    let result = self.call_fn(&f, args, &[]);
+                    let (w, reg) = self.worker_and_reg(lang)?;
+                    match result {
+                        Ok(v) => w.send_cb_ok(reg, &v)?,
+                        Err(Escape::Error(e)) => w.send_cb_err(&e)?,
+                        Err(_) => w.send_cb_err("break/continue escaped a callback")?,
+                    }
+                }
+            }
+        }
+    }
+
+    fn w_import(&mut self, lang: Lang, name: &str) -> EvalResult {
+        {
+            let (w, _) = self.worker_and_reg(lang)?;
+            w.send_import(name)?;
+        }
+        self.pump(lang)
+    }
+
+    fn w_getattr(&mut self, obj: &Value, name: &str) -> EvalResult {
+        let lang = ref_lang(obj)?;
+        {
+            let (w, reg) = self.worker_and_reg(lang)?;
+            w.send_getattr(reg, obj, name)?;
+        }
+        self.pump(lang)
+    }
+
+    fn w_index(&mut self, obj: &Value, key: &Value) -> EvalResult {
+        let lang = ref_lang(obj)?;
+        {
+            let (w, reg) = self.worker_and_reg(lang)?;
+            w.send_index(reg, obj, key)?;
+        }
+        self.pump(lang)
+    }
+
+    fn w_call(&mut self, obj: &Value, args: &[Value], kwargs: &[(String, Value)]) -> EvalResult {
+        let lang = ref_lang(obj)?;
+        {
+            let (w, reg) = self.worker_and_reg(lang)?;
+            w.send_call(reg, obj, args, kwargs)?;
+        }
+        self.pump(lang)
+    }
+
+    fn w_str(&mut self, obj: &Value) -> EvalResult {
+        let lang = ref_lang(obj)?;
+        {
+            let (w, reg) = self.worker_and_reg(lang)?;
+            w.send_str(reg, obj)?;
+        }
+        self.pump(lang)
     }
 
     /// Run a chunk of source. With `echo`, bare expression results are printed.
@@ -131,7 +206,7 @@ impl Interp {
     fn exec(&mut self, s: &Stmt, env: &Rc<RefCell<Env>>) -> Result<(), Escape> {
         match s {
             Stmt::Use { lang, module, alias } => {
-                let v = self.worker(*lang)?.import(module)?;
+                let v = self.w_import(*lang, module)?;
                 Env::define(env, alias, v);
             }
             Stmt::Let(name, e) => {
@@ -256,7 +331,7 @@ impl Interp {
             Expr::Attr(obj, name) => {
                 let ov = self.eval(obj, env)?;
                 match ov {
-                    Value::Ref { lang, .. } => Ok(self.worker(lang)?.getattr(&ov, name)?),
+                    Value::Ref { .. } => self.w_getattr(&ov, name),
                     _ => Err(Escape::Error(format!(
                         "only worker refs have attributes (tried .{name})"
                     ))),
@@ -266,10 +341,7 @@ impl Interp {
                 let ov = self.eval(obj, env)?;
                 let kv = self.eval(key, env)?;
                 match (&ov, &kv) {
-                    (Value::Ref { lang, .. }, _) => {
-                        let lang = *lang;
-                        Ok(self.worker(lang)?.index(&ov, &kv)?)
-                    }
+                    (Value::Ref { .. }, _) => self.w_index(&ov, &kv),
                     (Value::Data(Json::Array(a)), Value::Data(k)) => {
                         let i = k
                             .as_f64()
@@ -301,12 +373,12 @@ impl Interp {
                     argv.push(self.eval(a, env)?);
                 }
                 match cv {
-                    Value::Ref { lang, .. } => {
+                    Value::Ref { .. } => {
                         let mut kwv = Vec::new();
                         for (k, v) in kwargs {
                             kwv.push((k.clone(), self.eval(v, env)?));
                         }
-                        Ok(self.worker(lang)?.call(&cv, &argv, &kwv)?)
+                        self.w_call(&cv, &argv, &kwv)
                     }
                     Value::Fn(f) => self.call_fn(&f, argv, kwargs),
                     Value::Data(_) => Err(Escape::Error("value is not callable".to_string())),
@@ -412,15 +484,13 @@ impl Interp {
                 Value::Data(Json::Array(a)) => Value::Data(json!(a.len())),
                 Value::Data(Json::Object(m)) => Value::Data(json!(m.len())),
                 r @ Value::Ref { lang: Lang::Py, .. } => {
-                    let f = self.worker(Lang::Py)?.getattr(r, "__len__")?;
-                    self.worker(Lang::Py)?.call(&f, &[], &[])?
+                    let f = self.w_getattr(r, "__len__")?;
+                    self.w_call(&f, &[], &[])?
                 }
-                r @ Value::Ref { lang: Lang::Js, .. } => {
-                    match self.worker(Lang::Js)?.getattr(r, "length")? {
-                        Value::Data(j) if j.is_number() => Value::Data(j),
-                        _ => return Err(Escape::Error("len: js value has no numeric .length".into())),
-                    }
-                }
+                r @ Value::Ref { lang: Lang::Js, .. } => match self.w_getattr(r, "length")? {
+                    Value::Data(j) if j.is_number() => Value::Data(j),
+                    _ => return Err(Escape::Error("len: js value has no numeric .length".into())),
+                },
                 _ => return Err(Escape::Error("len wants a string, array, object, or worker ref".into())),
             },
             ("range", 1 | 2) => {
@@ -451,15 +521,19 @@ impl Interp {
         match v {
             Value::Data(Json::String(s)) => Ok(s.clone()),
             Value::Data(j) => Ok(serde_json::to_string(j).unwrap_or_default()),
-            r @ Value::Ref { lang, .. } => {
-                let lang = *lang;
-                match self.worker(lang)?.str_of(r)? {
-                    Value::Data(Json::String(s)) => Ok(s),
-                    other => Ok(display(&other)),
-                }
-            }
+            r @ Value::Ref { .. } => match self.w_str(r)? {
+                Value::Data(Json::String(s)) => Ok(s),
+                other => Ok(display(&other)),
+            },
             Value::Fn(_) => Ok(display(v)),
         }
+    }
+}
+
+fn ref_lang(v: &Value) -> Result<Lang, Escape> {
+    match v {
+        Value::Ref { lang, .. } => Ok(*lang),
+        _ => Err(Escape::Error("expected a worker ref".to_string())),
     }
 }
 
