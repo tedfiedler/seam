@@ -100,6 +100,27 @@ async function handle(req) {
       if (Object.keys(kw).length > 0) args.push(fromWire(kw)); // kwargs -> options object
       return await fn(...args);
     }
+    case 'binop': {
+      const a = fromWire(req.a);
+      if (req.operator === 'neg') return -a;
+      const b = fromWire(req.b);
+      switch (req.operator) {
+        case '+': return a + b;
+        case '-': return a - b;
+        case '*': return a * b;
+        case '/': return a / b;
+        case '%': return a % b;
+        case '==': return a === b;
+        case '!=': return a !== b;
+        case '<': return a < b;
+        case '<=': return a <= b;
+        case '>': return a > b;
+        case '>=': return a >= b;
+        case '&': return a && b;
+        case '|': return a || b;
+        default: throw new Error('unknown operator: ' + req.operator);
+      }
+    }
     case 'str':
       return util.inspect(fromWire(req.obj), { depth: 2 });
     case 'release':

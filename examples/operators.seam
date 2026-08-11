@@ -1,0 +1,20 @@
+# operators delegate to the ref's worker — run: seam examples/operators.seam
+use py "pandas" as pd
+
+let df = pd.read_csv("examples/sales.csv")
+
+# comparisons on a Series produce a boolean Series; indexing with it filters
+let east = df[df["region"] == "east"]
+print("east rows:", len(east), "— total:", east["amount"].sum())
+
+let big = df[df["amount"] > 1000]
+print("big sales:", big["date"].tolist())
+
+# arithmetic broadcasts, ref-op-ref works, negation too
+print("with 8% tax:", (df["amount"] * 1.08).round(2).tolist())
+print("doubled:", (df["amount"] + df["amount"]).sum())
+print("negated:", (-df["amount"]).min())
+
+# seam's and/or on refs delegate as elementwise &/| — mask combination
+let mid = df[(df["amount"] > 500) and (df["amount"] < 1500)]
+print("mid-range:", mid["amount"].tolist())

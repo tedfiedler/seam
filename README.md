@@ -48,6 +48,11 @@ cowsay and chalk for the demos.
   `break` / `continue` — `for` iterates arrays, object keys, and strings
 - operators: `+ - * / %`, `== != < <= > >=`, `and or not` (short-circuit,
   Python-style value semantics); only `nil` and `false` are falsy
+- **operators delegate to workers**: with a ref on either side, the owning
+  worker applies its own semantics — `df["amount"] > 1000` is a boolean
+  Series, `df[mask]` filters, arithmetic broadcasts, `-series` negates, and
+  `and`/`or` on refs become elementwise `&`/`|` (pandas mask combination):
+  `df[(df["amount"] > 500) and (df["amount"] < 1500)]`
 - strings, numbers, `true/false/nil`, `[arrays]`, `{objects}` (JSON-shaped data)
 - `obj.attr`, `obj[key]`, `f(args, kw=arg)` on worker handles — for JS calls,
   kwargs become a trailing options object (`cow.say(text = "moo")`); JS
@@ -68,7 +73,7 @@ cowsay and chalk for the demos.
 
 `src/worker.rs` spawns `worker/worker.py` and/or `worker/worker.js` (both
 embedded in the binary) and speaks newline-delimited JSON over stdin/stdout.
-Six ops: `import`, `getattr`, `call`, `index`, `str`, `release`. Every reply
+Seven ops: `import`, `getattr`, `call`, `index`, `binop`, `str`, `release`. Every reply
 value is either `{"$":"data","v":...}` (JSON-shaped → copied into seam) or
 `{"$":"ref","id":n,"repr":"..."}` (lives in that worker's heap; seam holds the
 handle and routes later ops back to the owning worker). Passing one worker's
@@ -88,7 +93,6 @@ traceback/stack; the REPL survives them. A boundary crossing costs ~30µs.
 
 - synchronous JS callbacks (`[1,2].map(f)` gets promises — Node can't block;
   Python callbacks are fully synchronous)
-- iterating a ref directly (`.tolist()` / `.to_dict()` it first) and
-  operators on refs (`df["x"] == "east"` — needs an operator-protocol op)
+- iterating a ref directly (`.tolist()` / `.to_dict()` it first)
 - handle release before exit (handles free when the worker dies)
 - cross-worker refs, streaming/async beyond awaited promises, big-data (Arrow)

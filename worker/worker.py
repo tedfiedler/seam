@@ -1,4 +1,12 @@
-import sys, json, importlib, traceback
+import sys, json, importlib, operator, traceback
+
+OPS = {
+    "+": operator.add, "-": operator.sub, "*": operator.mul,
+    "/": operator.truediv, "%": operator.mod,
+    "==": operator.eq, "!=": operator.ne,
+    "<": operator.lt, "<=": operator.le, ">": operator.gt, ">=": operator.ge,
+    "&": operator.and_, "|": operator.or_,
+}
 
 # Stray prints from imported libraries must not corrupt the protocol stream.
 proto = sys.stdout
@@ -82,6 +90,13 @@ def handle_request(req):
                 *[from_wire(a) for a in req.get("args", [])],
                 **{k: from_wire(v) for k, v in req.get("kwargs", {}).items()},
             )
+        elif op == "binop":
+            o = req["operator"]
+            a = from_wire(req["a"])
+            if o == "neg":
+                res = -a
+            else:
+                res = OPS[o](a, from_wire(req["b"]))
         elif op == "str":
             res = str(from_wire(req["obj"]))
         elif op == "release":

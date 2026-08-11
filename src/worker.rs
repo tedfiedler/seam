@@ -113,6 +113,23 @@ impl Worker {
         self.send_json(&json!({"id": id, "op": "call", "obj": obj, "args": args, "kwargs": kw}))
     }
 
+    pub fn send_binop(
+        &mut self,
+        reg: &mut CbRegistry,
+        op: &str,
+        a: &Value,
+        b: Option<&Value>,
+    ) -> Result<(), String> {
+        let a = self.to_wire(reg, a)?;
+        let mut msg = json!({"op": "binop", "operator": op, "a": a});
+        if let Some(b) = b {
+            msg["b"] = self.to_wire(reg, b)?;
+        }
+        let id = self.next_req();
+        msg["id"] = json!(id);
+        self.send_json(&msg)
+    }
+
     pub fn send_str(&mut self, reg: &mut CbRegistry, obj: &Value) -> Result<(), String> {
         let obj = self.to_wire(reg, obj)?;
         let id = self.next_req();

@@ -175,6 +175,14 @@ impl Interp {
         self.pump(lang)
     }
 
+    fn w_binop(&mut self, lang: Lang, op: &str, a: &Value, b: Option<&Value>) -> EvalResult {
+        {
+            let (w, reg) = self.worker_and_reg(lang)?;
+            w.send_binop(reg, op, a, b)?;
+        }
+        self.pump(lang)
+    }
+
     fn w_str(&mut self, obj: &Value) -> EvalResult {
         let lang = ref_lang(obj)?;
         {
@@ -387,14 +395,35 @@ impl Interp {
             Expr::Binop(op, a, b) => {
                 let av = self.eval(a, env)?;
                 let bv = self.eval(b, env)?;
-                binop(*op, &av, &bv)
+                match (&av, &bv) {
+                    (Value::Fn(_), _) | (_, Value::Fn(_)) => {
+                        Err(Escape::Error("operators don't apply to functions".to_string()))
+                    }
+                    // a ref on either side: the owning worker applies its own
+                    // operator semantics (pandas broadcasting, etc.)
+                    (Value::Ref { lang, .. }, _) | (_, Value::Ref { lang, .. }) => {
+                        let lang = *lang;
+                        self.w_binop(lang, op_str(*op), &av, Some(&bv))
+                    }
+                    _ => binop(*op, &av, &bv),
+                }
             }
             Expr::And(a, b) => {
                 let av = self.eval(a, env)?;
+                // refs delegate as elementwise & (pandas mask semantics);
+                // data keeps short-circuit value semantics
+                if let Value::Ref { lang, .. } = av {
+                    let bv = self.eval(b, env)?;
+                    return self.w_binop(lang, "&", &av, Some(&bv));
+                }
                 if truthy(&av) { self.eval(b, env) } else { Ok(av) }
             }
             Expr::Or(a, b) => {
                 let av = self.eval(a, env)?;
+                if let Value::Ref { lang, .. } = av {
+                    let bv = self.eval(b, env)?;
+                    return self.w_binop(lang, "|", &av, Some(&bv));
+                }
                 if truthy(&av) { Ok(av) } else { self.eval(b, env) }
             }
             Expr::Not(a) => {
@@ -407,6 +436,10 @@ impl Interp {
                         .as_f64()
                         .ok_or_else(|| Escape::Error(format!("cannot negate {j}")))?;
                     Ok(Value::Data(num_to_json(-n)))
+                }
+                r @ Value::Ref { lang, .. } => {
+                    let lang = lang;
+                    self.w_binop(lang, "neg", &r, None)
                 }
                 _ => Err(Escape::Error("cannot negate that value".to_string())),
             },
@@ -541,12 +574,25 @@ fn truthy(v: &Value) -> bool {
     !matches!(v, Value::Data(Json::Null) | Value::Data(Json::Bool(false)))
 }
 
+fn op_str(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::Mul => "*",
+        BinOp::Div => "/",
+        BinOp::Mod => "%",
+        BinOp::Eq => "==",
+        BinOp::Ne => "!=",
+        BinOp::Lt => "<",
+        BinOp::Le => "<=",
+        BinOp::Gt => ">",
+        BinOp::Ge => ">=",
+    }
+}
+
 fn binop(op: BinOp, a: &Value, b: &Value) -> EvalResult {
     let (Value::Data(ja), Value::Data(jb)) = (a, b) else {
-        return Err(Escape::Error(
-            "operators need data values, not worker refs — pull the data across first (e.g. .item() or .tolist())"
-                .to_string(),
-        ));
+        return Err(Escape::Error("operators apply to data and worker refs only".to_string()));
     };
     match op {
         BinOp::Eq => return Ok(Value::Data(json!(ja == jb))),
