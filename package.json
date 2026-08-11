@@ -1,0 +1,28 @@
+{
+  "name": "seam",
+  "version": "1.0.0",
+  "description": "A tiny scripting language that borrows its batteries. Foreign packages run in persistent worker subprocesses (Python today; Node next); seam holds handles to their objects and marshals JSON across the boundary. Foreign values never enter the seam process — that one rule buys crash isolation, no GC entanglement, and free use of an entire package ecosystem.",
+  "main": "index.js",
+  "directories": {
+    "example": "examples"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tedfiedler/seam.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/tedfiedler/seam/issues"
+  },
+  "homepage": "https://github.com/tedfiedler/seam#readme",
+  "dependencies": {
+    "chalk": "^6.0.0",
+    "cowsay": "^1.6.0"
+  }
+}

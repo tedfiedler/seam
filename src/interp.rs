@@ -4,13 +4,13 @@ use std::rc::Rc;
 
 use serde_json::{json, Value as Json};
 
-use crate::parse::{BinOp, Expr, Parser, Stmt};
+use crate::parse::{BinOp, Expr, Lang, Parser, Stmt};
 use crate::worker::Worker;
 
 #[derive(Clone)]
 pub enum Value {
     Data(Json),
-    PyRef { id: u64, repr: String },
+    Ref { lang: Lang, id: u64, repr: String },
     Fn(Rc<FnDef>),
 }
 
@@ -82,6 +82,7 @@ type EvalResult = Result<Value, Escape>;
 pub struct Interp {
     globals: Rc<RefCell<Env>>,
     py: Option<Worker>,
+    js: Option<Worker>,
     echo: bool,
 }
 
@@ -90,17 +91,22 @@ impl Interp {
         Interp {
             globals: Rc::new(RefCell::new(Env { vars: HashMap::new(), parent: None })),
             py: None,
+            js: None,
             echo: false,
         }
     }
 
-    fn py(&mut self) -> Result<&mut Worker, String> {
-        if self.py.is_none() {
-            let w = Worker::spawn_python()?;
-            eprintln!("· spawned python worker ({})", w.python);
-            self.py = Some(w);
+    fn worker(&mut self, lang: Lang) -> Result<&mut Worker, String> {
+        let slot = match lang {
+            Lang::Py => &mut self.py,
+            Lang::Js => &mut self.js,
+        };
+        if slot.is_none() {
+            let w = Worker::spawn(lang)?;
+            eprintln!("· spawned {lang} worker ({})", w.cmd);
+            *slot = Some(w);
         }
-        Ok(self.py.as_mut().unwrap())
+        Ok(slot.as_mut().unwrap())
     }
 
     /// Run a chunk of source. With `echo`, bare expression results are printed.
@@ -124,8 +130,8 @@ impl Interp {
 
     fn exec(&mut self, s: &Stmt, env: &Rc<RefCell<Env>>) -> Result<(), Escape> {
         match s {
-            Stmt::UsePy { module, alias } => {
-                let v = self.py()?.import(module)?;
+            Stmt::Use { lang, module, alias } => {
+                let v = self.worker(*lang)?.import(module)?;
                 Env::define(env, alias, v);
             }
             Stmt::Let(name, e) => {
@@ -172,9 +178,9 @@ impl Interp {
                     Value::Data(Json::String(s)) => {
                         s.chars().map(|c| Value::Data(json!(c.to_string()))).collect()
                     }
-                    Value::PyRef { .. } => {
+                    Value::Ref { .. } => {
                         return Err(Escape::Error(
-                            "can't iterate a python ref yet — pull data across first (e.g. .tolist() or .to_dict())"
+                            "can't iterate a worker ref yet — pull data across first (e.g. .tolist() or .to_dict())"
                                 .to_string(),
                         ))
                     }
@@ -250,9 +256,9 @@ impl Interp {
             Expr::Attr(obj, name) => {
                 let ov = self.eval(obj, env)?;
                 match ov {
-                    Value::PyRef { .. } => Ok(self.py()?.getattr(&ov, name)?),
+                    Value::Ref { lang, .. } => Ok(self.worker(lang)?.getattr(&ov, name)?),
                     _ => Err(Escape::Error(format!(
-                        "only python refs have attributes (tried .{name})"
+                        "only worker refs have attributes (tried .{name})"
                     ))),
                 }
             }
@@ -260,7 +266,10 @@ impl Interp {
                 let ov = self.eval(obj, env)?;
                 let kv = self.eval(key, env)?;
                 match (&ov, &kv) {
-                    (Value::PyRef { .. }, _) => Ok(self.py()?.index(&ov, &kv)?),
+                    (Value::Ref { lang, .. }, _) => {
+                        let lang = *lang;
+                        Ok(self.worker(lang)?.index(&ov, &kv)?)
+                    }
                     (Value::Data(Json::Array(a)), Value::Data(k)) => {
                         let i = k
                             .as_f64()
@@ -292,12 +301,12 @@ impl Interp {
                     argv.push(self.eval(a, env)?);
                 }
                 match cv {
-                    Value::PyRef { .. } => {
+                    Value::Ref { lang, .. } => {
                         let mut kwv = Vec::new();
                         for (k, v) in kwargs {
                             kwv.push((k.clone(), self.eval(v, env)?));
                         }
-                        Ok(self.py()?.call(&cv, &argv, &kwv)?)
+                        Ok(self.worker(lang)?.call(&cv, &argv, &kwv)?)
                     }
                     Value::Fn(f) => self.call_fn(&f, argv, kwargs),
                     Value::Data(_) => Err(Escape::Error("value is not callable".to_string())),
@@ -402,11 +411,17 @@ impl Interp {
                 Value::Data(Json::String(s)) => Value::Data(json!(s.chars().count())),
                 Value::Data(Json::Array(a)) => Value::Data(json!(a.len())),
                 Value::Data(Json::Object(m)) => Value::Data(json!(m.len())),
-                r @ Value::PyRef { .. } => {
-                    let f = self.py()?.getattr(r, "__len__")?;
-                    self.py()?.call(&f, &[], &[])?
+                r @ Value::Ref { lang: Lang::Py, .. } => {
+                    let f = self.worker(Lang::Py)?.getattr(r, "__len__")?;
+                    self.worker(Lang::Py)?.call(&f, &[], &[])?
                 }
-                _ => return Err(Escape::Error("len wants a string, array, object, or python ref".into())),
+                r @ Value::Ref { lang: Lang::Js, .. } => {
+                    match self.worker(Lang::Js)?.getattr(r, "length")? {
+                        Value::Data(j) if j.is_number() => Value::Data(j),
+                        _ => return Err(Escape::Error("len: js value has no numeric .length".into())),
+                    }
+                }
+                _ => return Err(Escape::Error("len wants a string, array, object, or worker ref".into())),
             },
             ("range", 1 | 2) => {
                 let int = |v: &Value| -> Result<i64, Escape> {
@@ -436,10 +451,13 @@ impl Interp {
         match v {
             Value::Data(Json::String(s)) => Ok(s.clone()),
             Value::Data(j) => Ok(serde_json::to_string(j).unwrap_or_default()),
-            r @ Value::PyRef { .. } => match self.py()?.str_of(r)? {
-                Value::Data(Json::String(s)) => Ok(s),
-                other => Ok(display(&other)),
-            },
+            r @ Value::Ref { lang, .. } => {
+                let lang = *lang;
+                match self.worker(lang)?.str_of(r)? {
+                    Value::Data(Json::String(s)) => Ok(s),
+                    other => Ok(display(&other)),
+                }
+            }
             Value::Fn(_) => Ok(display(v)),
         }
     }
@@ -452,7 +470,7 @@ fn truthy(v: &Value) -> bool {
 fn binop(op: BinOp, a: &Value, b: &Value) -> EvalResult {
     let (Value::Data(ja), Value::Data(jb)) = (a, b) else {
         return Err(Escape::Error(
-            "operators need data values, not python refs — pull the data across first (e.g. .item() or .tolist())"
+            "operators need data values, not worker refs — pull the data across first (e.g. .item() or .tolist())"
                 .to_string(),
         ));
     };
@@ -515,7 +533,7 @@ fn json_plain(j: &Json) -> String {
 pub fn display(v: &Value) -> String {
     match v {
         Value::Data(j) => serde_json::to_string(j).unwrap_or_default(),
-        Value::PyRef { id, repr } => format!("<py:{id} {repr}>"),
+        Value::Ref { lang, id, repr } => format!("<{lang}:{id} {repr}>"),
         Value::Fn(f) => format!("<fn {}({})>", f.name, f.params.join(", ")),
     }
 }

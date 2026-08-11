@@ -1,0 +1,9 @@
+# both ecosystems in one script — run: seam examples/polyglot.seam
+use py "pandas" as pd
+use js "cowsay" as cow
+
+let df = pd.read_csv("examples/sales.csv")
+let total = df["amount"].sum()
+let best = df.groupby("region")["amount"].sum().idxmax()
+
+print(cow.say(text = "sales: " + total + " — " + best + " is winning"))

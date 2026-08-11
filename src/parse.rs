@@ -1,8 +1,23 @@
 use crate::lex::Tok;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lang {
+    Py,
+    Js,
+}
+
+impl std::fmt::Display for Lang {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(match self {
+            Lang::Py => "py",
+            Lang::Js => "js",
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Stmt {
-    UsePy { module: String, alias: String },
+    Use { lang: Lang, module: String, alias: String },
     Let(String, Expr),
     Assign(String, Expr),
     Expr(Expr),
@@ -142,10 +157,13 @@ impl Parser {
             match kw.as_str() {
                 "use" => {
                     self.pos += 1;
-                    let lang = self.ident()?;
-                    if lang != "py" {
-                        return Err(format!("only 'py' workers exist yet (got '{lang}')"));
-                    }
+                    let lang = match self.ident()?.as_str() {
+                        "py" => Lang::Py,
+                        "js" => Lang::Js,
+                        other => {
+                            return Err(format!("unknown worker language '{other}' (try py or js)"))
+                        }
+                    };
                     let module = match self.next() {
                         Some(Tok::Str(s)) => s,
                         other => {
@@ -158,7 +176,7 @@ impl Parser {
                     if !self.eat_kw("as") {
                         return Err(format!("line {}: expected 'as' after module name", self.line()));
                     }
-                    return Ok(Stmt::UsePy { module, alias: self.ident()? });
+                    return Ok(Stmt::Use { lang, module, alias: self.ident()? });
                 }
                 "let" => {
                     self.pos += 1;
