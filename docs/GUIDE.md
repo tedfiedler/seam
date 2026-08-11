@@ -28,8 +28,13 @@ a DataFrame, get the memory back.
 
 ## Setup
 
-You need the Rust toolchain, plus `python3` and/or `node` on your PATH —
-each worker spawns only when a script first uses its language.
+```sh
+brew install tedfiedler/tap/seam     # easiest — macOS / Linux
+```
+
+Or prebuilt binaries from the
+[releases page](https://github.com/tedfiedler/seam/releases), or from
+source with the Rust toolchain:
 
 ```sh
 git clone https://github.com/tedfiedler/seam
@@ -37,6 +42,9 @@ cd seam
 cargo build --release                # ./target/release/seam
 cargo install --path .               # optional: puts `seam` on PATH
 ```
+
+You'll want `python3` and/or `node` on your PATH — each worker spawns
+only when a script first uses its language.
 
 ### Packages are pip's and npm's problem — that's the design
 
