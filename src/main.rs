@@ -7,6 +7,30 @@ use std::io::{self, BufRead, IsTerminal, Write};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+
+    match args.get(1).map(String::as_str) {
+        Some("--version") | Some("-V") => {
+            println!("seam {}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        Some("--help") | Some("-h") => {
+            println!("seam {} — a tiny scripting language with borrowed batteries", env!("CARGO_PKG_VERSION"));
+            println!();
+            println!("usage:");
+            println!("  seam                     REPL (:q or ctrl-d to quit)");
+            println!("  seam script.seam [args]  run a script; args land in `argv`");
+            println!("  seam < script.seam       pipe mode (echoes expression results)");
+            println!();
+            println!("`use py ...` needs python3 on PATH (prefers ./.venv/bin/python3);");
+            println!("`use js ...` needs node (resolves ./node_modules). Neither spawns");
+            println!("until a script asks for it.");
+            println!();
+            println!("guide: https://github.com/tedfiedler/seam/blob/main/docs/GUIDE.md");
+            return;
+        }
+        _ => {}
+    }
+
     let mut interp = interp::Interp::new();
 
     // file mode: seam script.seam [args...] (expression results are not echoed)

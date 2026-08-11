@@ -27,6 +27,19 @@ print(cow.say(text = "sales: " + total))
 **New here? Start with the [guide](docs/GUIDE.md)** — setup, the full
 language reference, and worked examples.
 
+## Install
+
+```sh
+brew install tedfiedler/tap/seam          # macOS / Linux, via Homebrew
+cargo install --git https://github.com/tedfiedler/seam   # from source
+```
+
+Or grab a prebuilt binary from the
+[releases](https://github.com/tedfiedler/seam/releases) (macOS
+arm64/x86_64, Linux x86_64/arm64). `use py` wants `python3` on PATH and
+`use js` wants `node` — neither spawns until a script asks. Windows is
+untested (workers assume unix-y paths).
+
 ## Run
 
 ```sh
