@@ -20,7 +20,9 @@ objects) are *data* — they copy across and become seam values. Everything
 else (a DataFrame, a JS class instance, a generator) stays in its worker's
 heap and seam holds a *ref* — a numbered handle. Operations on a ref
 (attributes, calls, operators, iteration) route back to the worker that
-owns it.
+owns it. Handles are garbage-collected: when the last seam copy of a ref
+drops, the worker frees its object at the next statement boundary — drop
+a DataFrame, get the memory back.
 
 ---
 
@@ -248,6 +250,7 @@ new pd.Timestamp("2026-01-01")      # same as pd.Timestamp(...)
 | `split(s, sep)` | `split("a-b", "-")` → `["a","b"]` |
 | `join(sep, xs)` | `join("/", parts)` — numbers stringify |
 | `slice(x, a, b?)` | strings (by char) and arrays; negatives count from the end |
+| `stats()` | live object count per spawned worker — watch the handle GC work |
 
 Scripts also get **`argv`** — the arguments after the script path
 (`seam repos.seam torvalds` → `argv` is `["torvalds"]`; empty in the REPL).

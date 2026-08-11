@@ -114,8 +114,11 @@ def handle_request(req):
         elif op == "str":
             res = str(from_wire(req["obj"]))
         elif op == "release":
-            objs.pop(req["ref"], None)
+            for r in req.get("refs", []):
+                objs.pop(r, None)
             res = None
+        elif op == "stats":
+            res = {"objects": len(objs)}
         else:
             raise ValueError(f"unknown op: {op}")
         out = {"id": req["id"], "ok": True, "value": to_wire(res)}

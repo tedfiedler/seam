@@ -149,8 +149,10 @@ async function handle(req) {
     case 'str':
       return util.inspect(fromWire(req.obj), { depth: 2 });
     case 'release':
-      objs.delete(req.ref);
+      for (const r of req.refs || []) objs.delete(r);
       return null;
+    case 'stats':
+      return { objects: objs.size };
     default:
       throw new Error('unknown op: ' + req.op);
   }

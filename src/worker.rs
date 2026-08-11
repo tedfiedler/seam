@@ -12,6 +12,23 @@ use crate::parse::Lang;
 const PY_WORKER: &str = include_str!("../worker/worker.py");
 const JS_WORKER: &str = include_str!("../worker/worker.js");
 
+/// Shared list of worker-object ids whose last seam handle has dropped.
+/// Drained (batched into one `release` op) at statement boundaries.
+pub type Graveyard = Rc<std::cell::RefCell<Vec<u64>>>;
+
+/// Rides inside every Value::Ref; clones share it. When the final clone
+/// drops, the id goes to the graveyard so the worker can free the object.
+pub struct RefGuard {
+    id: u64,
+    graveyard: Graveyard,
+}
+
+impl Drop for RefGuard {
+    fn drop(&mut self) {
+        self.graveyard.borrow_mut().push(self.id);
+    }
+}
+
 /// Seam functions handed to workers, keyed by the id sent over the wire.
 pub struct CbRegistry {
     fns: HashMap<u64, Rc<FnDef>>,
@@ -48,6 +65,7 @@ pub struct Worker {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     next_id: u64,
+    graveyard: Graveyard,
     pub cmd: String,
 }
 
@@ -77,7 +95,15 @@ impl Worker {
             .map_err(|e| format!("failed to start {cmd}: {e}"))?;
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
-        Ok(Worker { lang, _child: child, stdin, stdout, next_id: 0, cmd })
+        Ok(Worker {
+            lang,
+            _child: child,
+            stdin,
+            stdout,
+            next_id: 0,
+            graveyard: Rc::new(std::cell::RefCell::new(Vec::new())),
+            cmd,
+        })
     }
 
     pub fn send_import(&mut self, name: &str) -> Result<(), String> {
@@ -182,6 +208,22 @@ impl Worker {
         self.send_json(&json!({"id": id, "op": "new", "obj": obj, "args": args, "kwargs": kw}))
     }
 
+    pub fn pending_release(&self) -> bool {
+        !self.graveyard.borrow().is_empty()
+    }
+
+    /// Send one batched release for every id whose last handle has dropped.
+    pub fn send_release_batch(&mut self) -> Result<(), String> {
+        let ids = std::mem::take(&mut *self.graveyard.borrow_mut());
+        let id = self.next_req();
+        self.send_json(&json!({"id": id, "op": "release", "refs": ids}))
+    }
+
+    pub fn send_stats(&mut self) -> Result<(), String> {
+        let id = self.next_req();
+        self.send_json(&json!({"id": id, "op": "stats"}))
+    }
+
     pub fn send_iter(&mut self, reg: &mut CbRegistry, obj: &Value) -> Result<(), String> {
         let obj = self.to_wire(reg, obj)?;
         let id = self.next_req();
@@ -267,11 +309,15 @@ impl Worker {
 
     fn wire_to_value(&self, w: &Json) -> Value {
         match w["$"].as_str() {
-            Some("ref") => Value::Ref {
-                lang: self.lang,
-                id: w["id"].as_u64().unwrap_or(0),
-                repr: w["repr"].as_str().unwrap_or("").to_string(),
-            },
+            Some("ref") => {
+                let id = w["id"].as_u64().unwrap_or(0);
+                Value::Ref {
+                    lang: self.lang,
+                    id,
+                    repr: w["repr"].as_str().unwrap_or("").to_string(),
+                    _guard: Rc::new(RefGuard { id, graveyard: self.graveyard.clone() }),
+                }
+            }
             _ => Value::Data(w["v"].clone()),
         }
     }

@@ -10,7 +10,7 @@ use crate::worker::{CbRegistry, Worker, WorkerMsg};
 #[derive(Clone)]
 pub enum Value {
     Data(Json),
-    Ref { lang: Lang, id: u64, repr: String },
+    Ref { lang: Lang, id: u64, repr: String, _guard: Rc<crate::worker::RefGuard> },
     Fn(Rc<FnDef>),
 }
 
@@ -257,7 +257,30 @@ impl Interp {
         Ok(())
     }
 
+    /// Free worker objects whose last seam handle has dropped. Runs at
+    /// statement boundaries — a safe point where no request is mid-flight
+    /// (inside a callback it's just another nested request).
+    fn drain_graveyards(&mut self) -> Result<(), Escape> {
+        for lang in [Lang::Py, Lang::Js] {
+            let pending = match lang {
+                Lang::Py => self.py.as_ref(),
+                Lang::Js => self.js.as_ref(),
+            }
+            .map(|w| w.pending_release())
+            .unwrap_or(false);
+            if pending {
+                {
+                    let (w, _) = self.worker_and_reg(lang)?;
+                    w.send_release_batch()?;
+                }
+                self.pump_val(lang)?;
+            }
+        }
+        Ok(())
+    }
+
     fn exec(&mut self, s: &Stmt, env: &Rc<RefCell<Env>>) -> Result<(), Escape> {
+        self.drain_graveyards()?;
         match s {
             Stmt::Use { lang, module, alias } => {
                 let v = self.w_import(*lang, module)?;
@@ -626,7 +649,10 @@ impl Interp {
         kwargs: &[(String, Expr)],
         env: &Rc<RefCell<Env>>,
     ) -> Result<Option<Value>, Escape> {
-        if !matches!(name, "print" | "len" | "range" | "str" | "split" | "join" | "slice") {
+        if !matches!(
+            name,
+            "print" | "len" | "range" | "str" | "split" | "join" | "slice" | "stats"
+        ) {
             return Ok(None);
         }
         if !kwargs.is_empty() {
@@ -676,6 +702,25 @@ impl Interp {
                     (int(&argv[0])?, int(&argv[1])?)
                 };
                 Value::Data(Json::Array((lo..hi).map(|i| json!(i)).collect()))
+            }
+            ("stats", 0) => {
+                let mut out = serde_json::Map::new();
+                for lang in [Lang::Py, Lang::Js] {
+                    let spawned = match lang {
+                        Lang::Py => self.py.is_some(),
+                        Lang::Js => self.js.is_some(),
+                    };
+                    if spawned {
+                        {
+                            let (w, _) = self.worker_and_reg(lang)?;
+                            w.send_stats()?;
+                        }
+                        if let Value::Data(j) = self.pump_val(lang)? {
+                            out.insert(lang.to_string(), j);
+                        }
+                    }
+                }
+                Value::Data(Json::Object(out))
             }
             ("split", 2) => match (&argv[0], &argv[1]) {
                 (Value::Data(Json::String(s)), Value::Data(Json::String(sep))) => {
@@ -835,7 +880,7 @@ fn json_plain(j: &Json) -> String {
 pub fn display(v: &Value) -> String {
     match v {
         Value::Data(j) => serde_json::to_string(j).unwrap_or_default(),
-        Value::Ref { lang, id, repr } => format!("<{lang}:{id} {repr}>"),
+        Value::Ref { lang, id, repr, .. } => format!("<{lang}:{id} {repr}>"),
         Value::Fn(f) => format!("<fn {}({})>", f.name, f.params.join(", ")),
     }
 }

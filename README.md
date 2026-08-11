@@ -84,8 +84,14 @@ cowsay and chalk for the demos.
 
 `src/worker.rs` spawns `worker/worker.py` and/or `worker/worker.js` (both
 embedded in the binary) and speaks newline-delimited JSON over stdin/stdout.
-Twelve ops: `import`, `getattr`, `setattr`, `call`, `new`, `index`,
-`setitem`, `binop`, `iter`, `next`, `str`, `release`. Every reply
+Thirteen ops: `import`, `getattr`, `setattr`, `call`, `new`, `index`,
+`setitem`, `binop`, `iter`, `next`, `str`, `release`, `stats`.
+
+Handles are garbage-collected: every ref carries a shared guard, and when
+the last seam copy drops, its id lands in a per-worker graveyard that's
+drained — one batched `release` — at the next statement boundary. Only
+objects seam still holds stay alive in worker heaps; `stats()` shows the
+live count per worker if you want to watch. Every reply
 value is either `{"$":"data","v":...}` (JSON-shaped → copied into seam) or
 `{"$":"ref","id":n,"repr":"..."}` (lives in that worker's heap; seam holds the
 handle and routes later ops back to the owning worker). Passing one worker's
@@ -123,5 +129,6 @@ line after `}`). What remains true and deliberate:
 - synchronous JS callbacks (`[1,2].map(f)` gets promises — Node can't block;
   Python callbacks are fully synchronous)
 - async JS iterators (`for await` protocol — sync iterables only for now)
-- handle release before exit (handles free when the worker dies)
+- releasing callback registrations (seam fns handed to workers stay
+  registered until exit — worker-side finalizers would be needed)
 - cross-worker refs, streaming/async beyond awaited promises, big-data (Arrow)
