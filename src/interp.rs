@@ -188,6 +188,33 @@ impl Interp {
         self.pump_val(lang)
     }
 
+    fn w_setattr(&mut self, obj: &Value, name: &str, value: &Value) -> EvalResult {
+        let lang = ref_lang(obj)?;
+        {
+            let (w, reg) = self.worker_and_reg(lang)?;
+            w.send_setattr(reg, obj, name, value)?;
+        }
+        self.pump_val(lang)
+    }
+
+    fn w_setitem(&mut self, obj: &Value, key: &Value, value: &Value) -> EvalResult {
+        let lang = ref_lang(obj)?;
+        {
+            let (w, reg) = self.worker_and_reg(lang)?;
+            w.send_setitem(reg, obj, key, value)?;
+        }
+        self.pump_val(lang)
+    }
+
+    fn w_new(&mut self, obj: &Value, args: &[Value], kwargs: &[(String, Value)]) -> EvalResult {
+        let lang = ref_lang(obj)?;
+        {
+            let (w, reg) = self.worker_and_reg(lang)?;
+            w.send_new(reg, obj, args, kwargs)?;
+        }
+        self.pump_val(lang)
+    }
+
     fn w_binop(&mut self, lang: Lang, op: &str, a: &Value, b: Option<&Value>) -> EvalResult {
         {
             let (w, reg) = self.worker_and_reg(lang)?;
@@ -203,6 +230,12 @@ impl Interp {
             w.send_str(reg, obj)?;
         }
         self.pump_val(lang)
+    }
+
+    /// Define the global `argv` array (script arguments; empty in the REPL).
+    pub fn set_argv(&mut self, args: &[String]) {
+        let arr = Json::Array(args.iter().map(|s| json!(s)).collect());
+        Env::define(&self.globals, "argv", Value::Data(arr));
     }
 
     /// Run a chunk of source. With `echo`, bare expression results are printed.
@@ -240,6 +273,36 @@ impl Interp {
                     return Err(Escape::Error(format!(
                         "undefined variable '{name}' — use let to define it"
                     )));
+                }
+            }
+            Stmt::SetIndex { obj, key, value } => {
+                let ov = self.eval(obj, env)?;
+                let kv = self.eval(key, env)?;
+                let vv = self.eval(value, env)?;
+                match &ov {
+                    Value::Ref { .. } => {
+                        self.w_setitem(&ov, &kv, &vv)?;
+                    }
+                    _ => {
+                        return Err(Escape::Error(
+                            "item assignment needs a worker ref — seam data is immutable (build a new array/object)"
+                                .to_string(),
+                        ))
+                    }
+                }
+            }
+            Stmt::SetAttr { obj, name, value } => {
+                let ov = self.eval(obj, env)?;
+                let vv = self.eval(value, env)?;
+                match &ov {
+                    Value::Ref { .. } => {
+                        self.w_setattr(&ov, name, &vv)?;
+                    }
+                    _ => {
+                        return Err(Escape::Error(
+                            "attribute assignment needs a worker ref".to_string(),
+                        ))
+                    }
                 }
             }
             Stmt::Expr(e) => {
@@ -444,6 +507,25 @@ impl Interp {
                     Value::Data(_) => Err(Escape::Error("value is not callable".to_string())),
                 }
             }
+            Expr::New { callee, args, kwargs } => {
+                let cv = self.eval(callee, env)?;
+                match cv {
+                    Value::Ref { .. } => {
+                        let mut argv = Vec::new();
+                        for a in args {
+                            argv.push(self.eval(a, env)?);
+                        }
+                        let mut kwv = Vec::new();
+                        for (k, v) in kwargs {
+                            kwv.push((k.clone(), self.eval(v, env)?));
+                        }
+                        self.w_new(&cv, &argv, &kwv)
+                    }
+                    _ => Err(Escape::Error(
+                        "new needs a worker class or constructor".to_string(),
+                    )),
+                }
+            }
             Expr::Binop(op, a, b) => {
                 let av = self.eval(a, env)?;
                 let bv = self.eval(b, env)?;
@@ -544,7 +626,7 @@ impl Interp {
         kwargs: &[(String, Expr)],
         env: &Rc<RefCell<Env>>,
     ) -> Result<Option<Value>, Escape> {
-        if !matches!(name, "print" | "len" | "range" | "str") {
+        if !matches!(name, "print" | "len" | "range" | "str" | "split" | "join" | "slice") {
             return Ok(None);
         }
         if !kwargs.is_empty() {
@@ -594,6 +676,54 @@ impl Interp {
                     (int(&argv[0])?, int(&argv[1])?)
                 };
                 Value::Data(Json::Array((lo..hi).map(|i| json!(i)).collect()))
+            }
+            ("split", 2) => match (&argv[0], &argv[1]) {
+                (Value::Data(Json::String(s)), Value::Data(Json::String(sep))) => {
+                    if sep.is_empty() {
+                        return Err(Escape::Error("split separator can't be empty".into()));
+                    }
+                    Value::Data(Json::Array(s.split(sep.as_str()).map(|p| json!(p)).collect()))
+                }
+                _ => return Err(Escape::Error("split wants (string, separator)".into())),
+            },
+            ("join", 2) => match (&argv[0], &argv[1]) {
+                (Value::Data(Json::String(sep)), Value::Data(Json::Array(a))) => {
+                    let parts: Vec<String> = a.iter().map(json_plain).collect();
+                    Value::Data(json!(parts.join(sep)))
+                }
+                _ => return Err(Escape::Error("join wants (separator, array)".into())),
+            },
+            ("slice", 2 | 3) => {
+                let idx = |v: &Value| -> Result<i64, Escape> {
+                    match v {
+                        Value::Data(j) => j
+                            .as_f64()
+                            .map(|f| f as i64)
+                            .ok_or_else(|| Escape::Error("slice indices must be numbers".into())),
+                        _ => Err(Escape::Error("slice indices must be numbers".into())),
+                    }
+                };
+                // python-style: negatives count from the end, out-of-range clamps
+                let norm = |i: i64, len: i64| -> usize {
+                    (if i < 0 { i + len } else { i }).clamp(0, len) as usize
+                };
+                let start = idx(&argv[1])?;
+                match &argv[0] {
+                    Value::Data(Json::String(s)) => {
+                        let chars: Vec<char> = s.chars().collect();
+                        let len = chars.len() as i64;
+                        let end = if argv.len() == 3 { idx(&argv[2])? } else { len };
+                        let (a, b) = (norm(start, len), norm(end, len));
+                        Value::Data(json!(chars[a..b.max(a)].iter().collect::<String>()))
+                    }
+                    Value::Data(Json::Array(arr)) => {
+                        let len = arr.len() as i64;
+                        let end = if argv.len() == 3 { idx(&argv[2])? } else { len };
+                        let (a, b) = (norm(start, len), norm(end, len));
+                        Value::Data(Json::Array(arr[a..b.max(a)].to_vec()))
+                    }
+                    _ => return Err(Escape::Error("slice wants a string or array first".into())),
+                }
             }
             (name, n) => {
                 return Err(Escape::Error(format!("{name} doesn't take {n} argument(s)")))

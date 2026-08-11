@@ -81,11 +81,16 @@ Object literal keys are bare identifiers or strings: `{name: "ted",
 "full name": "..."}`. Arrays and objects hold data only — refs can't be
 placed inside literals (pass them separately).
 
+String escapes: `\n \t \" \\`, plus `\x1b` (two hex digits) and
+`\u{1F44B}` (a codepoint) — ANSI colors and emoji without workarounds.
+
 ### Variables and scope
 
 ```
 let x = 5        # define in the current scope
 x = 6            # assign — walks outward through enclosing scopes
+df["col"] = s    # item assignment on a worker ref (worker's setitem)
+obj.attr = v     # attribute assignment on a worker ref
 ```
 
 Assignment without `let` requires the variable to exist somewhere up the
@@ -219,6 +224,19 @@ cow.say(text = "moo")                  # ...a trailing options object in JS
 JS methods are `this`-bound at the boundary, and promises returned by JS
 calls are awaited before crossing — `await`-free async consumption.
 
+**Constructing instances**: `new` builds JS class instances
+(`Reflect.construct` underneath); on Python classes it's identical to a
+plain call, so use whichever reads better:
+
+```
+let acc = new h.Accumulator(10)     # JS class
+acc.total = 0                       # setattr on the instance
+new pd.Timestamp("2026-01-01")      # same as pd.Timestamp(...)
+```
+
+`new` binds to one call — to chain off a fresh instance, parenthesize:
+`(new h.Accumulator(5)).add(1)`.
+
 ### Builtins
 
 | builtin | behavior |
@@ -227,6 +245,12 @@ calls are awaited before crossing — `await`-free async consumption.
 | `len(x)` | strings, arrays, objects; py refs via `__len__`; js refs via `.length` |
 | `range(n)` / `range(a, b)` | array of integers, half-open |
 | `str(x)` | stringify anything, workers consulted for refs |
+| `split(s, sep)` | `split("a-b", "-")` → `["a","b"]` |
+| `join(sep, xs)` | `join("/", parts)` — numbers stringify |
+| `slice(x, a, b?)` | strings (by char) and arrays; negatives count from the end |
+
+Scripts also get **`argv`** — the arguments after the script path
+(`seam repos.seam torvalds` → `argv` is `["torvalds"]`; empty in the REPL).
 
 ### Errors
 
@@ -236,15 +260,11 @@ lives on, your session keeps its state.
 
 ### Sharp edges (current)
 
-- **No item/attr assignment on refs**: `df["x"] = ...` doesn't parse.
-  Use the functional form: `df.assign(x = ...)`.
-- **No `new`**: JS class instances can't be constructed yet.
-- **No `\x1b` / `\u` escapes** in strings (`\n \t \" \\` only) —
-  `py.chr(27)` builds ANSI codes.
-- **No argv** in scripts yet.
 - **Data strings have no methods** — `"abc".upper` is an error, because
-  data lives in seam, not Python. Use `py.format(x, "<16")`, pandas
-  `.str.*`, or seam concat.
+  data lives in seam, not Python. Use the `split`/`join`/`slice`
+  builtins, `py.format(x, "<16")`, or pandas `.str.*`.
+- **Seam data is immutable** — `xs[0] = 5` on a seam array is an error;
+  item/attr assignment is for worker refs. Build new arrays instead.
 - **NaN is not data.** A NaN anywhere in a structure makes the whole
   marshal a ref instead of data (deliberately — silent NaN→null would
   lie). `.fillna(...)` before `.to_dict()`.

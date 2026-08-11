@@ -83,9 +83,15 @@ def handle_request(req):
             res = importlib.import_module(req["name"])
         elif op == "getattr":
             res = getattr(from_wire(req["obj"]), req["name"])
+        elif op == "setattr":
+            setattr(from_wire(req["obj"]), req["name"], from_wire(req["value"]))
+            res = None
         elif op == "index":
             res = from_wire(req["obj"])[from_wire(req["key"])]
-        elif op == "call":
+        elif op == "setitem":
+            from_wire(req["obj"])[from_wire(req["key"])] = from_wire(req["value"])
+            res = None
+        elif op in ("call", "new"):  # python classes are just callables
             res = from_wire(req["obj"])(
                 *[from_wire(a) for a in req.get("args", [])],
                 **{k: from_wire(v) for k, v in req.get("kwargs", {}).items()},

@@ -20,6 +20,8 @@ pub enum Stmt {
     Use { lang: Lang, module: String, alias: String },
     Let(String, Expr),
     Assign(String, Expr),
+    SetIndex { obj: Box<Expr>, key: Box<Expr>, value: Expr },
+    SetAttr { obj: Box<Expr>, name: String, value: Expr },
     Expr(Expr),
     If { cond: Expr, then: Vec<Stmt>, els: Vec<Stmt> },
     While { cond: Expr, body: Vec<Stmt> },
@@ -57,6 +59,7 @@ pub enum Expr {
     Attr(Box<Expr>, String),
     Index(Box<Expr>, Box<Expr>),
     Call { callee: Box<Expr>, args: Vec<Expr>, kwargs: Vec<(String, Expr)> },
+    New { callee: Box<Expr>, args: Vec<Expr>, kwargs: Vec<(String, Expr)> },
     Binop(BinOp, Box<Expr>, Box<Expr>),
     And(Box<Expr>, Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
@@ -242,13 +245,21 @@ impl Parser {
                 _ => {}
             }
         }
-        // assignment lookahead: Ident = expr (but not ==)
-        if let (Some(Tok::Ident(name)), Some(Tok::Eq)) = (self.peek(), self.peek2()) {
-            let name = name.clone();
-            self.pos += 2;
-            return Ok(Stmt::Assign(name, self.parse_expr()?));
+        // expression statement, or assignment if `=` follows a valid target
+        let e = self.parse_expr()?;
+        if self.eat(&Tok::Eq) {
+            let value = self.parse_expr()?;
+            return match e {
+                Expr::Var(name) => Ok(Stmt::Assign(name, value)),
+                Expr::Index(obj, key) => Ok(Stmt::SetIndex { obj, key, value }),
+                Expr::Attr(obj, name) => Ok(Stmt::SetAttr { obj, name, value }),
+                _ => Err(format!(
+                    "line {}: invalid assignment target (want name, obj[key], or obj.attr)",
+                    self.line()
+                )),
+            };
         }
-        Ok(Stmt::Expr(self.parse_expr()?))
+        Ok(Stmt::Expr(e))
     }
 
     /// 'if' keyword already consumed. `else` may follow the `}` on the same
@@ -368,6 +379,16 @@ impl Parser {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, String> {
+        if self.eat_kw("new") {
+            let e = self.parse_postfix()?;
+            return match e {
+                Expr::Call { callee, args, kwargs } => Ok(Expr::New { callee, args, kwargs }),
+                _ => Err(format!(
+                    "line {}: new needs a constructor call, e.g. new Thing(...)",
+                    self.line()
+                )),
+            };
+        }
         if self.eat(&Tok::Minus) {
             Ok(Expr::Neg(Box::new(self.parse_unary()?)))
         } else {

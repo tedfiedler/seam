@@ -9,8 +9,9 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut interp = interp::Interp::new();
 
-    // file mode: seam script.seam (expression results are not echoed)
+    // file mode: seam script.seam [args...] (expression results are not echoed)
     if args.len() > 1 {
+        interp.set_argv(args.get(2..).unwrap_or(&[]));
         let src = match std::fs::read_to_string(&args[1]) {
             Ok(s) => s,
             Err(e) => {
@@ -26,6 +27,7 @@ fn main() {
     }
 
     // REPL: accumulate lines until braces/brackets/parens balance
+    interp.set_argv(&[]);
     let tty = io::stdin().is_terminal();
     if tty {
         println!("seam 0.2 — a scripting language with borrowed batteries");

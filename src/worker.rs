@@ -138,6 +138,50 @@ impl Worker {
         self.send_json(&json!({"id": id, "op": "str", "obj": obj}))
     }
 
+    pub fn send_setattr(
+        &mut self,
+        reg: &mut CbRegistry,
+        obj: &Value,
+        name: &str,
+        value: &Value,
+    ) -> Result<(), String> {
+        let obj = self.to_wire(reg, obj)?;
+        let value = self.to_wire(reg, value)?;
+        let id = self.next_req();
+        self.send_json(&json!({"id": id, "op": "setattr", "obj": obj, "name": name, "value": value}))
+    }
+
+    pub fn send_setitem(
+        &mut self,
+        reg: &mut CbRegistry,
+        obj: &Value,
+        key: &Value,
+        value: &Value,
+    ) -> Result<(), String> {
+        let obj = self.to_wire(reg, obj)?;
+        let key = self.to_wire(reg, key)?;
+        let value = self.to_wire(reg, value)?;
+        let id = self.next_req();
+        self.send_json(&json!({"id": id, "op": "setitem", "obj": obj, "key": key, "value": value}))
+    }
+
+    pub fn send_new(
+        &mut self,
+        reg: &mut CbRegistry,
+        obj: &Value,
+        args: &[Value],
+        kwargs: &[(String, Value)],
+    ) -> Result<(), String> {
+        let obj = self.to_wire(reg, obj)?;
+        let args: Vec<Json> = args.iter().map(|v| self.to_wire(reg, v)).collect::<Result<_, _>>()?;
+        let mut kw = serde_json::Map::new();
+        for (k, v) in kwargs {
+            kw.insert(k.clone(), self.to_wire(reg, v)?);
+        }
+        let id = self.next_req();
+        self.send_json(&json!({"id": id, "op": "new", "obj": obj, "args": args, "kwargs": kw}))
+    }
+
     pub fn send_iter(&mut self, reg: &mut CbRegistry, obj: &Value) -> Result<(), String> {
         let obj = self.to_wire(reg, obj)?;
         let id = self.next_req();

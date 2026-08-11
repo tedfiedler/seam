@@ -114,19 +114,48 @@ pub fn lex(src: &str) -> Result<Vec<(Tok, u32)>, String> {
                         }
                         Some('\\') => {
                             i += 1;
-                            let e = chars
-                                .get(i)
-                                .ok_or(format!("line {line}: dangling escape"))?;
-                            s.push(match e {
-                                'n' => '\n',
-                                't' => '\t',
-                                '\\' => '\\',
-                                '"' => '"',
-                                other => {
-                                    return Err(format!("line {line}: unknown escape \\{other}"))
+                            match chars.get(i) {
+                                Some('n') => { s.push('\n'); i += 1 }
+                                Some('t') => { s.push('\t'); i += 1 }
+                                Some('\\') => { s.push('\\'); i += 1 }
+                                Some('"') => { s.push('"'); i += 1 }
+                                Some('x') => {
+                                    let hs: String = chars.iter().skip(i + 1).take(2).collect();
+                                    if hs.len() < 2 || !hs.chars().all(|c| c.is_ascii_hexdigit()) {
+                                        return Err(format!("line {line}: \\x needs two hex digits"));
+                                    }
+                                    let code = u32::from_str_radix(&hs, 16).unwrap();
+                                    s.push(char::from_u32(code).unwrap());
+                                    i += 3;
                                 }
-                            });
-                            i += 1;
+                                Some('u') => {
+                                    if chars.get(i + 1) != Some(&'{') {
+                                        return Err(format!("line {line}: \\u needs {{hex}}, e.g. \\u{{1F44B}}"));
+                                    }
+                                    let mut j = i + 2;
+                                    let mut hs = String::new();
+                                    while j < chars.len() && chars[j] != '}' {
+                                        hs.push(chars[j]);
+                                        j += 1;
+                                    }
+                                    if j >= chars.len()
+                                        || hs.is_empty()
+                                        || hs.len() > 6
+                                        || !hs.chars().all(|c| c.is_ascii_hexdigit())
+                                    {
+                                        return Err(format!("line {line}: bad \\u{{...}} escape"));
+                                    }
+                                    let code = u32::from_str_radix(&hs, 16).unwrap();
+                                    s.push(
+                                        char::from_u32(code)
+                                            .ok_or(format!("line {line}: invalid codepoint \\u{{{hs}}}"))?,
+                                    );
+                                    i = j + 1;
+                                }
+                                other => {
+                                    return Err(format!("line {line}: unknown escape \\{other:?}"))
+                                }
+                            }
                         }
                         Some(ch) => {
                             s.push(*ch);

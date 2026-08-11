@@ -1,20 +1,19 @@
-# repo health report — run: seam scripts/repos.seam
+# repo health report — run: seam scripts/repos.seam [github-user]
 # pandas crunches the GitHub API; cowsay announces the winner.
 use py "pandas" as pd
 use py "builtins" as py
 
 let user = "tedfiedler"
-let df = pd.read_json("https://api.github.com/users/" + user + "/repos?per_page=100")
-let mine = df[df["fork"] == false]
+if (len(argv) > 0) { user = argv[0] }
 
-let pushed = pd.to_datetime(mine["pushed_at"])
-let days = (pd.Timestamp.now(tz="UTC") - pushed).dt.days
-let dates = pushed.dt.strftime("%Y-%m-%d")
-let repos = mine.assign(days=days, date=dates).sort_values("days")
+let df = pd.read_json("https://api.github.com/users/" + user + "/repos?per_page=100")
+df["days"] = (pd.Timestamp.now(tz="UTC") - pd.to_datetime(df["pushed_at"])).dt.days
+df["date"] = pd.to_datetime(df["pushed_at"]).dt.strftime("%Y-%m-%d")
+
+let repos = df[df["fork"] == false].sort_values("days")
 let view = repos[["name", "stargazers_count", "open_issues_count", "language", "date", "days"]].fillna("-")
 
-let esc = py.chr(27)
-fn color(code, s) { return esc + "[" + code + "m" + s + esc + "[0m" }
+fn color(code, s) { return "\x1b[" + code + "m" + s + "\x1b[0m" }
 fn pad(s, w) { return py.format(str(s), "<" + w) }
 
 print("")

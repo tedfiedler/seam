@@ -1,0 +1,30 @@
+# weekend-8 features — run: seam examples/mutate.seam hello world
+use py "pandas" as pd
+
+# item assignment on refs
+let df = pd.read_csv("examples/sales.csv")
+df["with_tax"] = (df["amount"] * 1.08).round(2)
+print(df[["amount", "with_tax"]].head(2).to_dict("records"))
+
+# new constructs JS classes; attribute assignment works on refs
+use js "./examples/helpers.js" as h
+let acc = new h.Accumulator(10)
+acc.add(5)
+print("total:", acc.total)       # 15
+acc.total = 0
+print("after reset:", acc.add(3))
+
+# new on python classes is just a call — but reads naturally
+print(str(new pd.Timestamp("2026-01-01")))
+
+# \x escapes and \u codepoints
+print("\x1b[32mgreen at last\x1b[0m \u{1F44B}")
+
+# argv
+print("argv:", argv)
+
+# string builtins
+let parts = split("2026-08-10", "-")
+print(parts)
+print(join("/", parts))
+print(slice("abcdef", 1, 4), slice([1, 2, 3, 4], -2))

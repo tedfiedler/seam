@@ -60,12 +60,17 @@ cowsay and chalk for the demos.
   `and`/`or` on refs become elementwise `&`/`|` (pandas mask combination):
   `df[(df["amount"] > 500) and (df["amount"] < 1500)]`
 - strings, numbers, `true/false/nil`, `[arrays]`, `{objects}` (JSON-shaped data)
-- `obj.attr`, `obj[key]`, `f(args, kw=arg)` on worker handles — for JS calls,
+- `obj.attr`, `obj[key]`, `f(args, kw=arg)` on worker handles — plus
+  **assignment**: `df["col"] = series` and `obj.attr = v`, and **`new`** for
+  JS classes (`new h.Accumulator(10)`; on Python classes `new` is just a
+  call) — for JS calls,
   kwargs become a trailing options object (`cow.say(text = "moo")`); JS
   methods are `this`-bound at the boundary; promises are awaited; ESM default
   exports are unwrapped
 - builtins: `print(...)`, `len(x)` (`__len__` for py refs, `.length` for js),
-  `range(n)` / `range(a, b)`, `str(x)`
+  `range(n)` / `range(a, b)`, `str(x)`, `split(s, sep)`, `join(sep, xs)`,
+  `slice(x, a, b)` (negative indices ok); scripts get `argv`
+- string escapes: `\n \t \" \\ \x1b \u{1F44B}`
 - **callbacks**: seam functions cross the boundary — `py.map(double, xs)`,
   `py.sorted(xs, key=by_len)`, `df["amount"].apply(f)` all work, callbacks
   close over seam state, and a callback may re-enter the worker that's
@@ -79,8 +84,8 @@ cowsay and chalk for the demos.
 
 `src/worker.rs` spawns `worker/worker.py` and/or `worker/worker.js` (both
 embedded in the binary) and speaks newline-delimited JSON over stdin/stdout.
-Nine ops: `import`, `getattr`, `call`, `index`, `binop`, `iter`, `next`,
-`str`, `release`. Every reply
+Twelve ops: `import`, `getattr`, `setattr`, `call`, `new`, `index`,
+`setitem`, `binop`, `iter`, `next`, `str`, `release`. Every reply
 value is either `{"$":"data","v":...}` (JSON-shaped → copied into seam) or
 `{"$":"ref","id":n,"repr":"..."}` (lives in that worker's heap; seam holds the
 handle and routes later ops back to the owning worker). Passing one worker's
@@ -100,22 +105,18 @@ traceback/stack; the REPL survives them. A boundary crossing costs ~30µs.
 
 `scripts/repos.seam` is a working repo-health dashboard: GitHub API →
 pandas (freshness, stars, issues) → ANSI-colored table → cowsay verdict.
-Writing it surfaced the real friction list, in rough priority order:
+Try it on anyone: `seam scripts/repos.seam torvalds`.
 
-- **no item/attr assignment on refs** — `df["days"] = ...` doesn't parse;
-  `.assign(days=...)` works but a `setitem`/`setattr` op is the obvious next op
-- **no `new`** — JS class instances (`new Chalk({level: 3})`) can't be
-  constructed, which is why the script hand-rolls ANSI codes
-- **no `\x1b`/`\u{...}` string escapes** — `py.chr(27)` is the workaround
-- **no argv** — scripts can't take arguments yet
-- **no methods on data strings** — slicing/`split`/`ljust` need a worker
-  (`py.format(x, "<16")`) or pandas `.str` methods
-- **NaN poisons data marshaling** — one NaN in `to_dict("records")` turns the
-  whole result into a ref instead of data (`json.dumps(allow_nan=False)` is
-  strict by design); `.fillna()` first, but the failure is subtle
+Writing it surfaced a friction list that drove the next release: no
+item/attr assignment on refs, no `new`, no `\x1b` escapes, no argv, no
+string helpers — **all fixed in 0.7.0** (plus, en route, `else` on the
+line after `}`). What remains true and deliberate:
 
-One friction got fixed on the spot: `else` used to be required on the same
-line as `}` — the parser now looks ahead across newlines.
+- **NaN is not data** — one NaN in `to_dict("records")` turns the whole
+  result into a ref instead of data (silently coercing NaN→null would
+  lie); `.fillna()` first
+- **data strings have no methods** — use `split`/`join`/`slice` builtins,
+  `py.format`, or pandas `.str.*`
 
 ## Deliberately punted (so far)
 

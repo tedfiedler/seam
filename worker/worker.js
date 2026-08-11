@@ -101,8 +101,22 @@ async function handle(req) {
       const res = obj[req.name];
       return typeof res === 'function' ? res.bind(obj) : res;
     }
+    case 'setattr':
+      fromWire(req.obj)[req.name] = fromWire(req.value);
+      return null;
     case 'index':
       return fromWire(req.obj)[fromWire(req.key)];
+    case 'setitem':
+      fromWire(req.obj)[fromWire(req.key)] = fromWire(req.value);
+      return null;
+    case 'new': {
+      const cls = fromWire(req.obj);
+      if (typeof cls !== 'function') throw new TypeError('value is not constructable');
+      const args = (req.args || []).map(fromWire);
+      const kw = req.kwargs || {};
+      if (Object.keys(kw).length > 0) args.push(fromWire(kw));
+      return Reflect.construct(cls, args);
+    }
     case 'call': {
       const fn = fromWire(req.obj);
       if (typeof fn !== 'function') throw new TypeError('value is not a function');
